@@ -16,21 +16,20 @@
 
 package featurestoreloadtestframework.lib;
 
-import com.google.cloud.aiplatform.v1.EntityType;
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.aiplatform.v1.EntityTypeName;
 import com.google.cloud.aiplatform.v1.FeaturestoreOnlineServingServiceClient;
 import com.google.cloud.aiplatform.v1.FeatureSelector;
 import com.google.cloud.aiplatform.v1.FeaturestoreOnlineServingServiceSettings;
 import com.google.cloud.aiplatform.v1.IdMatcher;
-import com.google.cloud.aiplatform.v1.LocationName;
 import com.google.cloud.aiplatform.v1.ReadFeatureValuesRequest;
+import com.google.cloud.aiplatform.v1.ReadFeatureValuesResponse;
 import com.google.cloud.aiplatform.v1.StreamingReadFeatureValuesRequest;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import org.apache.commons.lang3.StringUtils;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Iterator;
 
 // Apply throughout, figure out FeatureStore (product?) vs Featurestore (an instance)
 public class FeatureStoreApiCallerV1 extends FeatureStoreApiCaller {
@@ -61,17 +60,17 @@ public class FeatureStoreApiCallerV1 extends FeatureStoreApiCaller {
         }
     }
 
-    public void call(FeatureStoreInput featureStoreInput) {
+    public FeatureStoreLoadTestResult call(FeatureStoreInput featureStoreInput) {
         if (featureStoreInput.getEntityIDs().size() > 0) {
-            streamingReadFeaturesValuesCall(featureStoreInput);
+            return streamingReadFeaturesValuesCall(featureStoreInput);
         } else if (! featureStoreInput.getEntityID().isEmpty()) {
-            readFeaturesValuesCall(featureStoreInput);
+            return readFeaturesValuesCall(featureStoreInput);
         } else {
             throw new IllegalArgumentException("Malformed FeatureStoreInput");
         }
     }
 
-    private void readFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
+    private FeatureStoreLoadTestResult readFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
         ReadFeatureValuesRequest request = ReadFeatureValuesRequest.newBuilder()
            .setEntityType(
                EntityTypeName.of(project, location, featureStoreInput.getFeatureStoreID(),
@@ -80,10 +79,14 @@ public class FeatureStoreApiCallerV1 extends FeatureStoreApiCaller {
            .setEntityId(featureStoreInput.getEntityID().get())
            .setFeatureSelector(FeatureSelector.newBuilder().setIdMatcher(IdMatcher.newBuilder().addAllIds(featureStoreInput.getFeatureIDs()).build()).build())
            .build();
-        onlineClient.readFeatureValues(request);
+
+        return callWrapper(() -> {
+            ReadFeatureValuesResponse response = onlineClient.readFeatureValues(request);
+            return response.getSerializedSize();
+        });
     }
 
-    private void streamingReadFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
+    private FeatureStoreLoadTestResult streamingReadFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
         StreamingReadFeatureValuesRequest request = StreamingReadFeatureValuesRequest.newBuilder()
            .setEntityType(
                EntityTypeName.of(project, location, featureStoreInput.getFeatureStoreID(),
@@ -92,7 +95,20 @@ public class FeatureStoreApiCallerV1 extends FeatureStoreApiCaller {
            .addAllEntityIds(featureStoreInput.getEntityIDs())
            .setFeatureSelector(FeatureSelector.newBuilder().setIdMatcher(IdMatcher.newBuilder().addAllIds(featureStoreInput.getFeatureIDs()).build()).build())
            .build();
-        onlineClient.streamingReadFeatureValuesCallable().call(request);
+
+        return callWrapper(() -> {
+            ServerStream<ReadFeatureValuesResponse> response = onlineClient.streamingReadFeatureValuesCallable()
+                .call(request);
+            int numEntities = 0;
+            int responseSize = 0;
+            Iterator<ReadFeatureValuesResponse> iter = response.iterator();
+            while (iter.hasNext()) {
+                ReadFeatureValuesResponse entityResponse = iter.next();
+                numEntities++;
+                responseSize += entityResponse.getSerializedSize();
+            }
+            return responseSize;
+        });
     }
 
 }

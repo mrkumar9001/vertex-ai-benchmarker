@@ -16,7 +16,9 @@
 
 package featurestoreloadtestframework.lib;
 
-import java.util.List;
+import com.google.api.gax.rpc.ApiException;
+import java.time.Duration;
+import java.time.Instant;
 
 public abstract class FeatureStoreApiCaller {
 	public enum REST_METHOD {
@@ -29,10 +31,7 @@ public abstract class FeatureStoreApiCaller {
 	protected REST_METHOD method;  // Evaluate if this should live somewhere else
 
 	public FeatureStoreApiCaller(String project, String location, REST_METHOD method) {
-		this.project = project;
-		this.location = location;
-		this.endpoint = String.format("%s-aiplatform.googleapis.com:443", location);
-		this.method = method;
+		this(project, location, String.format("%s-aiplatform.googleapis.com:443", location), method);
 	}
 
 	public FeatureStoreApiCaller(String project, String location, String endpointOverride,
@@ -43,6 +42,31 @@ public abstract class FeatureStoreApiCaller {
 		this.method = method;
 	}
 
-	public abstract void call(FeatureStoreInput featureStoreInput);
+	public abstract FeatureStoreLoadTestResult call(FeatureStoreInput featureStoreInput);
+
+	interface ReadRequest {
+		/**
+		 * Performs the read request code and returns response size.
+		 * TODO: Return # entities read.
+		 */
+		int call() throws ApiException;
+	}
+
+	/**
+	 * Helper method to return a FeatureStoreLoadTestResult.
+	 * @param readRequest The function to call which will perform the request and return response size.
+	 * @return The load test result.
+	 */
+	protected FeatureStoreLoadTestResult callWrapper(ReadRequest readRequest) {
+		Instant startTime = Instant.now();
+		try {
+			int responseSize = readRequest.call();
+			Duration latency = Duration.between(startTime, Instant.now());
+			return FeatureStoreLoadTestResult.successfulRun(startTime, latency, responseSize);
+		} catch (ApiException e) {
+			Duration latency = Duration.between(startTime, Instant.now());
+			return FeatureStoreLoadTestResult.failingRun(startTime, latency, e);
+		}
+	}
 
 }

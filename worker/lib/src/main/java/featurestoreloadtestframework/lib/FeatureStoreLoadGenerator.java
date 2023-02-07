@@ -16,15 +16,8 @@
 
 package featurestoreloadtestframework.lib;
 
-import java.util.List;
-
-public class FeatureStoreLoadGenerator extends LoadGenerator<FeatureStoreInput> {
-	private FeatureStoreApiCaller caller;
-
-	protected FeatureStoreLoadGenerator(FeatureStoreInput featureStoreInput, FeatureStoreApiCallerBuilder builder) {
-		super(featureStoreInput);
-		this.caller = builder.createFeatureStoreApiCaller();
-	}
+public class FeatureStoreLoadGenerator extends LoadGenerator<FeatureStoreInput, FeatureStoreLoadTestResult> {
+	private final FeatureStoreApiCaller caller;
 
 	protected FeatureStoreLoadGenerator(FeatureStoreInput featureStoreInput,
 		FeatureStoreApiCaller caller) {
@@ -32,8 +25,7 @@ public class FeatureStoreLoadGenerator extends LoadGenerator<FeatureStoreInput> 
 		this.caller = caller;
 	}
 
-	public Void call() {
-		caller.call(workItem);
-		return null;
+	public FeatureStoreLoadTestResult call() {
+		return caller.call(workItem);
 	}
 }

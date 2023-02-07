@@ -18,7 +18,11 @@ package featurestoreloadtestframework.lib;
 
 import java.util.concurrent.Callable;
 
-public abstract class LoadGenerator<T> implements Callable<Void> {
+/**
+ * @param <T> T is the type of the work item.
+ * @param <R> R is the response type from call().
+ */
+public abstract class LoadGenerator<T, R> implements Callable<R> {
 
 	protected T workItem;
 
@@ -26,5 +30,5 @@ public abstract class LoadGenerator<T> implements Callable<Void> {
 		this.workItem = workItem;
 	}
 
-	public abstract Void call();
+	public abstract R call();
 }

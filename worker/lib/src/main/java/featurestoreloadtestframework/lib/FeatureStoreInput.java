@@ -17,16 +17,14 @@
 package featurestoreloadtestframework.lib;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-
-import org.apache.commons.lang3.StringUtils;
-
 
 public class FeatureStoreInput {
     private String featureStoreID;
     private String entityType;
-    private Optional<String> entityID;
+    private Optional<String> entityID = Optional.empty();
     private List<String> entityIDs;
     private List<String> featureIDs;
 
@@ -34,7 +32,7 @@ public class FeatureStoreInput {
     public FeatureStoreInput(String featureStoreID, String entityType, String entityID, List<String> featureIDs) {
         this.featureStoreID = featureStoreID;
         this.entityType = entityType;
-        this.entityID = Optional.of(entityID);
+        this.entityID = Optional.ofNullable(entityID);
         this.entityIDs = new ArrayList();
         this.featureIDs = featureIDs;
     }
@@ -59,14 +57,14 @@ public class FeatureStoreInput {
     }
 
     public Optional<String> getEntityID() {
-        if (! entityID.isEmpty()) {
+        if (entityID.isPresent()) {
             return entityID;
         }
         return Optional.empty();
     }
 
     public List<String> getEntityIDs() {
-        return entityIDs;
+        return Collections.unmodifiableList(this.entityIDs);
     }
 
     public String toString() {

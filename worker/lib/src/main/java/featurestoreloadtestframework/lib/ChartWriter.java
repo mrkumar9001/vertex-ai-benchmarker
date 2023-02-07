@@ -22,8 +22,6 @@ import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
-import com.google.cloud.storage.BlobId;
-import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.StorageClass;
 import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.StorageException;
@@ -44,47 +42,21 @@ import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.Dataset;
 import com.google.cloud.bigquery.DatasetInfo;
-import com.google.cloud.bigquery.FormatOptions;
 
-import com.google.cloud.spanner.Backup;
-import com.google.cloud.spanner.BackupId;
 import com.google.cloud.spanner.Database;
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
-import com.google.cloud.spanner.Instance;
 import com.google.cloud.spanner.InstanceAdminClient;
-import com.google.cloud.spanner.InstanceId;
-import com.google.cloud.spanner.Key;
-import com.google.cloud.spanner.KeyRange;
-import com.google.cloud.spanner.KeySet;
-import com.google.cloud.spanner.Mutation;
-import com.google.cloud.spanner.Options;
-import com.google.cloud.spanner.ReadOnlyTransaction;
-import com.google.cloud.spanner.RestoreInfo;
-import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
-import com.google.cloud.spanner.SpannerBatchUpdateException;
-import com.google.cloud.spanner.SpannerException;
-import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
-import com.google.cloud.spanner.Struct;
-import com.google.cloud.spanner.TimestampBound;
-import com.google.cloud.spanner.Type;
-import com.google.cloud.spanner.Value;
 import com.google.spanner.admin.database.v1.CreateDatabaseMetadata;
 import com.google.api.gax.longrunning.OperationFuture;
 
 
-import java.io.IOException;
 import java.util.concurrent.ExecutionException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Set;
 
 public class ChartWriter {
     private Storage storageClient;
@@ -211,11 +183,16 @@ public class ChartWriter {
           }
     }
 
-    public void exportToBQ(String datasetName, String tableName, String sourceUri, WriteDisposition option) throws InterruptedException, BigQueryException {
+    public void exportToBQ(String datasetName, String tableName, String sourceUri,
+        WriteDisposition option) throws InterruptedException, BigQueryException {
         Schema schema =
-			Schema.of(
-				Field.of("start_time", StandardSQLTypeName.TIMESTAMP),
-				Field.of("latency", StandardSQLTypeName.TIME));
+            Schema.of(
+                Field.of("start_time", StandardSQLTypeName.TIMESTAMP),
+                Field.of("latency_ms", StandardSQLTypeName.FLOAT64),
+                Field.of("success", StandardSQLTypeName.BOOL),
+                Field.of("error_code", StandardSQLTypeName.STRING),
+                Field.of("error_details", StandardSQLTypeName.STRING),
+                Field.of("response_size", StandardSQLTypeName.INT64));
         this.createDatasetIfNotExist(datasetName);
         this.gcsToBQ(datasetName, tableName, sourceUri, schema, option);
     }
@@ -239,10 +216,11 @@ public class ChartWriter {
             System.err.println("Error when calling job.WaitFor(): " + e.toString());
             throw e;
         }
-        
 
         if (job.isDone()) {
-            System.out.println("CSV from GCS successfully added during load append job");
+            System.out.println(String.format(
+                "Wrote request statistics to BigQuery table '%s.%s'.",
+                datasetName, tableName));
         } else {
             System.out.println(
                 "BigQuery was unable to load into the table due to an error:"

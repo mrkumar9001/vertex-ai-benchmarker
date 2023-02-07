@@ -37,8 +37,10 @@ import featurestoreloadtestframework.lib.FeaturestoreOnlineService.StreamingRead
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.Scanner;
 import java.util.StringTokenizer;
 import java.util.UUID;
@@ -145,16 +147,18 @@ public class FeaturestoreInputFilesParser {
               readFeatureValuesRequestProtoToFeatureStoreInput(
                   allEntityIds, featurestoreId, request));
         } else if (request.hasStreamingReadFeatureValuesRequest()) {
-          featureStoreInputs.add(
-              streamingReadFeatureValuesRequestProtoToFeatureStoreInput(
-                  allEntityIds, featurestoreId, request));
+          Optional<FeatureStoreInput> fsInput = streamingReadFeatureValuesRequestProtoToFeatureStoreInput(
+              allEntityIds, featurestoreId, request);
+          if (fsInput.isPresent()) {
+            featureStoreInputs.add(fsInput.get());
+          }
         }
       }
     }
     return featureStoreInputs;
   }
 
-  private FeatureStoreInput streamingReadFeatureValuesRequestProtoToFeatureStoreInput(
+  private Optional<FeatureStoreInput> streamingReadFeatureValuesRequestProtoToFeatureStoreInput(
       HashMap<String, HashMap<String, List<String>>> allEntityIds,
       String featurestoreId,
       Request request) {
@@ -163,6 +167,11 @@ public class FeaturestoreInputFilesParser {
     List<String> entityIds = new ArrayList<>();
     String entityType = streamingReadFeatureValuesRequest.getEntityType();
     List<String> matchingIds = getEntityIds(allEntityIds, featurestoreId, entityType);
+    if (matchingIds.isEmpty()) {
+      System.out.println("ERROR: No matching entities, skipping query: " + request);
+      return Optional.empty();
+    }
+
     for (String entityId : streamingReadFeatureValuesRequest.getEntityIdsList()) {
       entityIds.addAll(processEntity(matchingIds, entityId));
     }
@@ -171,7 +180,7 @@ public class FeaturestoreInputFilesParser {
         streamingReadFeatureValuesRequest.getFeatureSelector().getIdMatcher().getIdsList()) {
       featureIds.add(featureId);
     }
-    return new FeatureStoreInput(featurestoreId, entityType, entityIds, featureIds);
+    return Optional.of(new FeatureStoreInput(featurestoreId, entityType, entityIds, featureIds));
   }
 
   private List<FeatureStoreInput> readFeatureValuesRequestProtoToFeatureStoreInput(
@@ -183,6 +192,15 @@ public class FeaturestoreInputFilesParser {
     List<String> entityIds = new ArrayList<>();
     String entityType = readFeatureValuesRequest.getEntityType();
     List<String> matchingIds = getEntityIds(allEntityIds, featurestoreId, entityType);
+    if (matchingIds.isEmpty()) {
+      System.err.println(
+          "ERROR: No matching entities for given feature query:\n"
+              + "--- START query ---\n"
+              + request
+              + "\n--- END query ---");
+      return Collections.emptyList();
+    }
+
     entityIds.addAll(processEntity(matchingIds, readFeatureValuesRequest.getEntityId()));
     List<String> featureIds = new ArrayList<>();
     for (String featureId :

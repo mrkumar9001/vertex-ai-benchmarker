@@ -21,6 +21,7 @@ import featurestoreloadtestframework.lib.FeatureStoreApiCallerBuilder;
 import featurestoreloadtestframework.lib.FeatureStoreApiCallerBuilder.API_VERSION;
 import featurestoreloadtestframework.lib.FeatureStoreInput;
 import featurestoreloadtestframework.lib.FeatureStoreLoadGenerator;
+import featurestoreloadtestframework.lib.FeatureStoreLoadTestResult;
 import featurestoreloadtestframework.lib.FeaturestoreInputFilesParser;
 import featurestoreloadtestframework.lib.FeatureStoreLoadGeneratorRequestListBuilder;
 import featurestoreloadtestframework.lib.LoadGeneratorManager;
@@ -141,7 +142,7 @@ public class App {
         /* builder = */ apiCallBuilder,
         /* providedInputs = */ inputs);
 
-    LoadGeneratorManager<FeatureStoreInput> lg = new LoadGeneratorManager<>(
+    LoadGeneratorManager<FeatureStoreInput, FeatureStoreLoadTestResult> lgm = new LoadGeneratorManager<>(
         /* targetQPS = */ options.targetQps,
         /* numberThreads = */ options.numThreads,
         /* sampleStrategy = */ options.sampleStrategy,
@@ -154,7 +155,7 @@ public class App {
         /* datasetId = */ options.bigqueryOutputDataset);
 
     try {
-      lg.run();
+      lgm.run();
     } catch (Exception e) {
       System.out.print("Exception running load generator manager:");
       e.printStackTrace(System.out);

@@ -16,26 +16,25 @@
 
 package featurestoreloadtestframework.lib;
 
-import com.google.cloud.aiplatform.v1beta1.EntityType;
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.aiplatform.v1beta1.EntityTypeName;
 import com.google.cloud.aiplatform.v1beta1.FeaturestoreOnlineServingServiceClient;
 import com.google.cloud.aiplatform.v1beta1.FeatureSelector;
 import com.google.cloud.aiplatform.v1beta1.FeaturestoreOnlineServingServiceSettings;
 import com.google.cloud.aiplatform.v1beta1.IdMatcher;
-import com.google.cloud.aiplatform.v1beta1.LocationName;
 import com.google.cloud.aiplatform.v1beta1.ReadFeatureValuesRequest;
+import com.google.cloud.aiplatform.v1beta1.ReadFeatureValuesResponse;
 import com.google.cloud.aiplatform.v1beta1.StreamingReadFeatureValuesRequest;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import org.apache.commons.lang3.StringUtils;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Iterator;
 
 // Apply throughout, figure out FeatureStore (product?) vs Featurestore (an instance)
 public class FeatureStoreApiCallerV1beta1 extends FeatureStoreApiCaller {
     private FeaturestoreOnlineServingServiceClient onlineClient;
-    
+
     public FeatureStoreApiCallerV1beta1(
         String project, String location, FeatureStoreApiCaller.REST_METHOD method) {
         super(project, location, method);
@@ -47,7 +46,7 @@ public class FeatureStoreApiCallerV1beta1 extends FeatureStoreApiCaller {
             System.out.println(e.toString());
         }
     }
-    
+
     public FeatureStoreApiCallerV1beta1(
         String project, String location, String endpointOverride,
         FeatureStoreApiCaller.REST_METHOD method) {
@@ -61,29 +60,34 @@ public class FeatureStoreApiCallerV1beta1 extends FeatureStoreApiCaller {
         }
     }
 
-    public void call(FeatureStoreInput featureStoreInput) {
+    public FeatureStoreLoadTestResult call(FeatureStoreInput featureStoreInput) {
         if (featureStoreInput.getEntityIDs().size() > 0) {
-            streamingReadFeaturesValuesCall(featureStoreInput);
-        } else if (! featureStoreInput.getEntityID().isEmpty()) {
-            readFeaturesValuesCall(featureStoreInput);
+            return streamingReadFeaturesValuesCall(featureStoreInput);
+        } else if (featureStoreInput.getEntityID().isPresent()) {
+            return readFeaturesValuesCall(featureStoreInput);
         } else {
             throw new IllegalArgumentException("Malformed FeatureStoreInput");
         }
     }
 
-    private void readFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
-        ReadFeatureValuesRequest request = ReadFeatureValuesRequest.newBuilder()
-           .setEntityType(
-               EntityTypeName.of(project, location, featureStoreInput.getFeatureStoreID(),
-                                    featureStoreInput.getEntityType())
-                   .toString())
-           .setEntityId(featureStoreInput.getEntityID().get())
-           .setFeatureSelector(FeatureSelector.newBuilder().setIdMatcher(IdMatcher.newBuilder().addAllIds(featureStoreInput.getFeatureIDs()).build()).build())
-           .build();
-        onlineClient.readFeatureValues(request);
-    }
+  private FeatureStoreLoadTestResult readFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
+    ReadFeatureValuesRequest request = ReadFeatureValuesRequest.newBuilder()
+        .setEntityType(
+            EntityTypeName.of(project, location, featureStoreInput.getFeatureStoreID(),
+                    featureStoreInput.getEntityType())
+                .toString())
+        .setEntityId(featureStoreInput.getEntityID().get())
+        .setFeatureSelector(FeatureSelector.newBuilder().setIdMatcher(
+            IdMatcher.newBuilder().addAllIds(featureStoreInput.getFeatureIDs()).build()).build())
+        .build();
 
-    private void streamingReadFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
+    return callWrapper(() -> {
+      ReadFeatureValuesResponse response = onlineClient.readFeatureValues(request);
+      return response.getSerializedSize();
+    });
+  }
+
+    private FeatureStoreLoadTestResult streamingReadFeaturesValuesCall(FeatureStoreInput featureStoreInput) {
         StreamingReadFeatureValuesRequest request = StreamingReadFeatureValuesRequest.newBuilder()
            .setEntityType(
                EntityTypeName.of(project, location, featureStoreInput.getFeatureStoreID(),
@@ -92,7 +96,19 @@ public class FeatureStoreApiCallerV1beta1 extends FeatureStoreApiCaller {
            .addAllEntityIds(featureStoreInput.getEntityIDs())
            .setFeatureSelector(FeatureSelector.newBuilder().setIdMatcher(IdMatcher.newBuilder().addAllIds(featureStoreInput.getFeatureIDs()).build()).build())
            .build();
-        onlineClient.streamingReadFeatureValuesCallable().call(request);
-    }
 
+      return callWrapper(() -> {
+        ServerStream<ReadFeatureValuesResponse> response = onlineClient.streamingReadFeatureValuesCallable()
+            .call(request);
+        int numEntities = 0;
+        int responseSize = 0;
+        Iterator<ReadFeatureValuesResponse> iter = response.iterator();
+        while (iter.hasNext()) {
+          ReadFeatureValuesResponse entityResponse = iter.next();
+          numEntities++;
+          responseSize += entityResponse.getSerializedSize();
+        }
+        return responseSize;
+      });
+    }
 }

@@ -20,21 +20,23 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
+import java.util.Vector;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.time.Instant;
-import java.lang.StringBuffer;
 
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.Bucket;
@@ -47,25 +49,25 @@ import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.ObjectUtils.Null;
 
 
-public class LoadGeneratorManager<T> {
+public class LoadGeneratorManager<T, R> {
 	public enum SAMPLE_STRATEGY {
 		IN_ORDER,
 		SHUFFLED,
 	}
 
-	private LoadGenerator<T>[] workQueue;
-	private List<LoadGenerator<T>> requestList;
+	private List<LoadGenerator<T, R>> workQueue;
+	private List<LoadGenerator<T, R>> requestList;
 	private int targetQPS;
 	private int numberThreads;
 	private int numberWarmupSamples;
 	private int numberSamples;
 	private SAMPLE_STRATEGY sampleStrategy;
 	private Sleeper sleeper;
-	private List<Duration> requestStats;
-	private List<FeatureStoreLoadTestResult> fullResult;
+
+	// TODO: Eventually this should be migrated to 'R'. For now we assume R = FeatureStoreLoadTestResult.
+	private Vector<FeatureStoreLoadTestResult> responseStats = new Vector<>();
 	private Long seed;
 	private String blobLocation = "";
 	private String blobBucket = "";
@@ -88,10 +90,7 @@ public class LoadGeneratorManager<T> {
 		this.numberWarmupSamples = numberWarmupSamples;
 		this.numberSamples = numberSamples;
 		this.sleeper = sleeper;
-		this.requestStats = new ArrayList();
 		this.bqDatasetName = datasetId;
-		// TODO: Potentially rename class name FeatureStoreLoadTestResult to something more generic.
-		this.fullResult = new ArrayList<FeatureStoreLoadTestResult>();
 		if (StringUtils.isNotBlank(blobLocation)) {
 			this.chartWriter = new ChartWriter(projectId, location);
 			this.getGCSFilePaths(blobLocation);
@@ -117,7 +116,10 @@ public class LoadGeneratorManager<T> {
 		this.blobBucket = aggregatedResultMatcher.group("bucket");
 		this.aggregatedResultsPath = aggregatedResultMatcher.group("blob");
 		if (this.bqDatasetName == "") {
-			this.bqDatasetName = String.format("vertex_ai_benchmarker_results_%d_qps_%s", this.targetQPS, this.uuid);
+			// BQ dataset name must be alphanumeric w/underscores.
+			String uuidWithoutDashes = this.uuid.replace('-', '_');
+			this.bqDatasetName = String.format("vertex_ai_benchmarker_results_%d_qps_%s", this.targetQPS,
+					uuidWithoutDashes);
 		}
 		this.blobLocation = blobLocation;
 	}
@@ -148,20 +150,21 @@ public class LoadGeneratorManager<T> {
         this.requestList = builder.generateRequestList();
     }
 
-	private LoadGenerator<T>[] generateWorkQueue(SAMPLE_STRATEGY sampleStrategy) {
+	private List<LoadGenerator<T, R>> generateWorkQueue(SAMPLE_STRATEGY sampleStrategy) {
 		switch (sampleStrategy) {
 			case IN_ORDER:
-				return requestList.toArray((LoadGenerator<T>[]) new LoadGenerator[0]);
+				return this.requestList;
 			case SHUFFLED:
-				LoadGenerator<T>[] t = (LoadGenerator<T>[]) new LoadGenerator[requestList.size()];
-				int index = 0;
-				List<LoadGenerator> temp = new ArrayList<LoadGenerator>();
+				List<LoadGenerator<T, R>> t = new ArrayList<>(requestList.size());
+				List<LoadGenerator> temp = new LinkedList<>();
 				temp.addAll(requestList);
 				Random r = seed == null ? new Random() : new Random(seed);
 				while (!temp.isEmpty()) {
-					t[index] = temp.remove(r.nextInt(temp.size()));
-					index++;
+					int nextElemIdx = r.nextInt(temp.size());
+					LoadGenerator nextElem = temp.remove(nextElemIdx);
+					t.add(nextElem);
 				}
+				assert(t.size() == this.requestList.size());
 				return t;
 			default:
 				throw new RuntimeException(
@@ -169,18 +172,21 @@ public class LoadGeneratorManager<T> {
 		}
 	}
 
+	Logger logger = Logger.getAnonymousLogger();
+
 	/**
-	 * Write a string to output. This can either be standard out or a GCS blob location if defined.
+	 * Write a string to a GCS file.
+	 * @param filePath The GCS file path.
 	 * @param content The string to write.
 	 */
-	private void writeStrToOutput(String filePath, String content) {
+	private void writeStrToGcs(String filePath, String content) {
 		if (this.blobBucket.isEmpty()) {
-			System.out.println(content);
+			logger.fine("Blob bucket is empty - is the output GCS Path set?");
 			return;
 		}
 
 		if (this.chartWriter == null) {
-			System.out.println(content);
+			logger.fine("BQ writer was not initialized - will not write to BQ.");
 			return;
 		}
 		this.chartWriter.write(this.blobBucket, filePath, content);
@@ -224,7 +230,7 @@ public class LoadGeneratorManager<T> {
 		StringBuilder content = new StringBuilder(csvHeader);
 		WritableByteChannel channel = detailedBlob.writer();
 
-		for (FeatureStoreLoadTestResult result : this.fullResult) {
+		for (FeatureStoreLoadTestResult result : this.responseStats) {
 			content.append(result.toString() + "\n");
 
 			// Write to csv file and append to BQ table before string exceeds Java max string length.
@@ -260,7 +266,9 @@ public class LoadGeneratorManager<T> {
 			final long _stop = stop;
 			Future<?> future = pool.submit(() -> {
 				try {
-					runSample(_index, keepStats);
+					if (!runSample(_index, keepStats)) {
+						System.out.println("[Sample " + _sampleNum + "] Failed.");
+					}
 					long end = System.currentTimeMillis();
 					if (end > _stop) {
 						System.out.println(
@@ -276,7 +284,7 @@ public class LoadGeneratorManager<T> {
 			});
 
 			index += targetQPS;
-			index = index % workQueue.length;
+			index = index % workQueue.size();
 
 			try {
 				sleeper.sleep(stop - System.currentTimeMillis());
@@ -299,8 +307,10 @@ public class LoadGeneratorManager<T> {
 		System.out.println("Running samples.");
 		runSamples(this.numberSamples, true); // Record stats for samples after warmup is done.
 
+		// Write aggregate to console. And also write to a GCS file if a GCS output path was given.
 		String statString = CalculateStats();
-		writeStrToOutput(this.aggregatedResultsPath, statString);
+		System.out.println(statString);
+		writeStrToGcs(this.aggregatedResultsPath, statString);
 		writeFullResultToCSV();
 	}
 
@@ -328,29 +338,47 @@ public class LoadGeneratorManager<T> {
 	}
 
 	private String CalculateStats() {
-		if (requestStats.isEmpty()) {
+		if (responseStats.isEmpty()) {
 			System.out.println("No stats to calculate yet!");
 			return StringUtils.EMPTY;
 		}
 		double average = 0.0D;
-		for (Duration curr : requestStats) {
-			long durationInMillis = curr.toMillis();
+		int numErrors = 0;
+		int numRequests = this.responseStats.size();
+		List<Duration> sortedDurations = new ArrayList<>(numRequests);
+		for (FeatureStoreLoadTestResult curr : this.responseStats) {
+			// If a code is present that means an error occurred.
+			if (curr.getErrorCode().isPresent()) {
+				numErrors++;
+				continue;
+			}
+			long durationInMillis = curr.getLatency().toMillis();
 			average += durationInMillis;
+			sortedDurations.add(curr.getLatency());
 		}
-		average = average / requestStats.size();
+		int numValidRequests = numRequests - numErrors;
+		average = average / numValidRequests;
 
-		List<Duration> copiedStats = new ArrayList(requestStats);
-		Collections.sort(copiedStats);
+		Collections.sort(sortedDurations);
 
-		long min = copiedStats.get(0).toMillis();
-		long max = copiedStats.get(copiedStats.size() - 1).toMillis();
-		long p90 = interpolation(copiedStats, 90).toMillis();
-		long p95 = interpolation(copiedStats, 95).toMillis();
-		long p99 = interpolation(copiedStats, 99).toMillis();
+		// In case all requests return as error - set all values to NaN.
+		double min = Double.NaN;
+		double max = Double.NaN;
+		double p90 = Double.NaN;
+		double p95 = Double.NaN;
+		double p99 = Double.NaN;
+		if (sortedDurations.size() > 0) {
+			min = DurationUtils.toMillis(sortedDurations.get(0));
+			max = DurationUtils.toMillis(sortedDurations.get(sortedDurations.size() - 1));
+			p90 = DurationUtils.toMillis(interpolation(sortedDurations, 90));
+			p95 = DurationUtils.toMillis(interpolation(sortedDurations, 95));
+			p99 = DurationUtils.toMillis(interpolation(sortedDurations, 99));
+		}
+		double errorPercentage = 100.0D * (((double) numErrors) / this.responseStats.size());
 
 		return String.format(
-				"Min: %dms, Max: %dms, Average: %.2fms, P90: %dms, P95: %dms, P99: %dms\n",
-				min, max, average, p90, p95, p99);
+				"(numbers in ms) Min: %.2f, Max: %.2f, Average: %.2f, P90: %.2f, P95: %.2f, P99: %.2f, Error percentage: %.2f%%\n",
+				min, max, average, p90, p95, p99, errorPercentage);
 	}
 
 	private void verifyBucketExists() throws Exception {
@@ -362,47 +390,78 @@ public class LoadGeneratorManager<T> {
 	}
 
 	/**
+	 * Collect return values from finished Futures and places them into this.responseStats.
+	 * @param futures The futures to look through - they may be in different states, either finished,
+	 *   				      cancelled or running.
+	 */
+	private void collectFutureResultValues(List<Future<R>> futures) {
+		// Iterate through all futures in the list.
+		for (Future future : futures) {
+			// If the future is not finished or was cancelled then the result is not useful.
+			if (!future.isDone() || future.isCancelled()) {
+				continue;
+			}
+
+			// Collect the result.
+			try {
+				R response = ((Future<R>) future).get();
+				this.responseStats.add((FeatureStoreLoadTestResult) response);
+			} catch (InterruptedException | ExecutionException e) {
+				throw new RuntimeException(e); // Since future is finished, should not get here.
+			}
+		}
+	}
+
+	/**
 	 * Will use items from the workQueue from index to index+targetQps % workQueue.length.
+	 * TODO: Return a percentage/stats about how many requests in the sample succeeded.
 	 * @param startIndex Which index in the work queue should sample start at?
 	 * @param keepStats Should the statistics be calculated? This is useful to turn off when running
 	 *                  initial samples which may be slow due to gRPC channel creation, other cache
 	 *                  warming, etc.
+	 * @return If the sample successfully completed.
 	 */
-	private void runSample(int startIndex, boolean keepStats) {
-		MetricsThreadPoolExecutor executor = new MetricsThreadPoolExecutor(
-			this.numberThreads);
+	private boolean runSample(int startIndex, boolean keepStats) {
+		ExecutorService executor = Executors.newFixedThreadPool(this.numberThreads);
+		List<Future<R>> futures = new ArrayList<>(targetQPS);
 		for (int x = 0; x < targetQPS; x++) {
-			executor.submit(workQueue[(startIndex + x) % workQueue.length]);
+			int workQueueIdx = (startIndex + x) % workQueue.size();
+			LoadGenerator<T, R> workItem = workQueue.get(workQueueIdx);
+			Future<R> future = executor.submit(workItem);
+			futures.add(future);
 		}
 		try {
 			executor.shutdown();
 			if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-				requestStats.addAll(executor.getRequestStats());
-				this.fullResult.addAll(executor.getFullResult());
-				throw new RuntimeException(String.format(
-					"Pending requests failed to execute."));
+				executor.shutdownNow();
+				if (keepStats) {
+					collectFutureResultValues(futures);
+				}
+				return false;
 			}
 		} catch(InterruptedException e) {
 			executor.shutdownNow();
-			Thread.currentThread().interrupt();
-			e.printStackTrace();
+			if (keepStats) {
+				collectFutureResultValues(futures);
+			}
+			return false;
 		}
 
 		if (keepStats) {
-			requestStats.addAll(executor.getRequestStats());
-			this.fullResult.addAll(executor.getFullResult());
+			collectFutureResultValues(futures);
 		}
+		return true;
 	}
 
-	protected LoadGenerator<T>[] getWorkQueue() {
-		return workQueue;
+	protected List<LoadGenerator<T, R>> getWorkQueue() {
+		return Collections.unmodifiableList(workQueue);
 	}
 
 	public void run() throws WorkTimeoutException, Exception, BigQueryException {
 		if (!this.blobBucket.isEmpty()) {
 			verifyBucketExists();
 		}
-		workQueue = generateWorkQueue(sampleStrategy);
+		workQueue = Collections.unmodifiableList(generateWorkQueue(sampleStrategy));
 		try {
 			runExperiment();
 		} catch (InterruptedException e) {
